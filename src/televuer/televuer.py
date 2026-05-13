@@ -389,10 +389,11 @@ class TeleVuer:
                 print(f"[hand_move DIAG] traceback:\n{_tb.format_exc()}", file=_sys.stderr, flush=True)
     
     def _hide_grid(self, session):
-        """FleetGlue (issue 0003): replace the default scene with one that excludes the ground
-        grid. The vuer.ai JS bundle treats query-param `grid=False` as truthy ("False" string),
-        so the queries= path doesn't work — but session.set with DefaultScene(grid=False) does."""
-        session.set @ DefaultScene(grid=False)
+        """FleetGlue (issue 0003): TEMPORARILY DISABLED — both `session.set @ DefaultScene(grid=False)`
+        and `session.remove @ "grid"` cause the camera scene to break (operator can't see camera
+        feed in VR). Reverted to no-op while we investigate. Issue 0003 is back to open.
+        Keeping the helper as a stub so call sites don't need to change."""
+        pass
 
     ## immersive MODE
     async def main_image_binocular_zmq(self, session):
