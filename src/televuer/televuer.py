@@ -1,5 +1,5 @@
 from vuer import Vuer
-from vuer.schemas import ImageBackground, Hands, MotionControllers, WebRTCVideoPlane, WebRTCStereoVideoPlane
+from vuer.schemas import ImageBackground, Hands, Head, MotionControllers, WebRTCVideoPlane, WebRTCStereoVideoPlane, DefaultScene
 from multiprocessing import Value, Array, Process, shared_memory
 import numpy as np
 import asyncio
@@ -90,6 +90,10 @@ class TeleVuer:
 
         self.vuer = Vuer(host='0.0.0.0', cert=cert_file, key=key_file, queries=dict(grid=False), queue_len=3)
         self.vuer.add_handler("CAMERA_MOVE")(self.on_cam_move)
+        # FleetGlue (head tracking): vuer.ai's current JS bundle fires HEAD_MOVE (not CAMERA_MOVE) when
+        # the WebXR session's headset pose changes — but only if a Head(stream=True) element is upserted
+        # into the scene. Register the handler here; the Head element is added per scene below.
+        self.vuer.add_handler("HEAD_MOVE")(self.on_head_move)
         if self.use_hand_tracking:
             self.vuer.add_handler("HAND_MOVE")(self.on_hand_move)
         else:
@@ -218,12 +222,50 @@ class TeleVuer:
             except:
                 pass
 
+    async def on_head_move(self, event, session, fps=60):
+        # FleetGlue (head tracking): Vuer's Head element with stream=True fires HEAD_MOVE events
+        # carrying a flat `matrix` (16 floats, column-major) in event.value. Write into the same
+        # shared array the CAMERA_MOVE path uses so tv_wrapper.head_pose stays a single source.
+        try:
+            with self.head_pose_shared.get_lock():
+                self.head_pose_shared[:] = event.value["matrix"]
+        except Exception as _e:
+            if not getattr(self, "_head_move_err_done", False):
+                self._head_move_err_done = True
+                import sys as _sys
+                print(f"[head_move DIAG] write failed: {_e!r}; event.value type={type(event.value).__name__}",
+                      file=_sys.stderr, flush=True)
+
     async def on_cam_move(self, event, session, fps=60):
+        # FleetGlue (head tracking diag): on the FIRST call only, dump event.value structure
+        # to stderr so we can see what shape Quest is sending us.
+        if not getattr(self, "_cam_move_diag_done", False):
+            self._cam_move_diag_done = True
+            try:
+                import sys as _sys
+                v = event.value
+                top = list(v.keys()) if hasattr(v, "keys") else f"type={type(v).__name__}"
+                inner = None
+                if hasattr(v, "keys") and "camera" in v:
+                    c = v["camera"]
+                    inner = list(c.keys()) if hasattr(c, "keys") else f"type={type(c).__name__}"
+                print(f"[cam_move DIAG] etype={getattr(event,'etype','?')} value.keys={top} value['camera'].keys={inner}",
+                      file=_sys.stderr, flush=True)
+                if not (hasattr(v, "keys") and "camera" in v and hasattr(v["camera"], "keys") and "matrix" in v["camera"]):
+                    # dump the whole structure (capped) so we can see actual shape
+                    print(f"[cam_move DIAG] full event.value (first 600 chars): {repr(v)[:600]}",
+                          file=_sys.stderr, flush=True)
+            except Exception as _e:
+                print(f"[cam_move DIAG] introspection failed: {_e!r}", file=_sys.stderr, flush=True)
         try:
             with self.head_pose_shared.get_lock():
                 self.head_pose_shared[:] = event.value["camera"]["matrix"]
-        except:
-            pass
+        except Exception as _e2:
+            # First-time exception path: log the cause, then suppress on repeat.
+            if not getattr(self, "_cam_move_err_done", False):
+                self._cam_move_err_done = True
+                import sys as _sys
+                print(f"[cam_move DIAG] write failed: {_e2!r}", file=_sys.stderr, flush=True)
 
     async def on_controller_move(self, event, session, fps=60):
         """https://docs.vuer.ai/en/latest/examples/20_motion_controllers.html"""
@@ -266,6 +308,25 @@ class TeleVuer:
 
     async def on_hand_move(self, event, session, fps=60):
         """https://docs.vuer.ai/en/latest/examples/19_hand_tracking.html"""
+        import sys as _sys
+        _n = getattr(self, "_hand_move_call_count", 0) + 1
+        self._hand_move_call_count = _n
+        if _n <= 5 or _n % 30 == 0:
+            try:
+                val = event.value
+                if hasattr(val, "keys"):
+                    keys = list(val.keys())
+                    left_v = val.get("left")
+                    right_v = val.get("right")
+                    left_len = len(left_v) if hasattr(left_v, "__len__") else "n/a"
+                    right_len = len(right_v) if hasattr(right_v, "__len__") else "n/a"
+                    print(f"[hand_move #{_n}] etype={getattr(event,'etype','?')} keys={keys} left_len={left_len} right_len={right_len}",
+                          file=_sys.stderr, flush=True)
+                else:
+                    print(f"[hand_move #{_n}] etype={getattr(event,'etype','?')} value_type={type(val).__name__} value={val!r:.200}",
+                          file=_sys.stderr, flush=True)
+            except Exception as _diag_exc:
+                print(f"[hand_move #{_n}] DIAG failed: {_diag_exc!r}", file=_sys.stderr, flush=True)
         try:
             # HandsData
             left_hand_data = event.value["left"]
@@ -307,12 +368,46 @@ class TeleVuer:
             extract_hand_poses(right_hand_data, self.right_arm_pose_shared, self.right_hand_position_shared, self.right_hand_orientation_shared)
             extract_hands(left_hand, "left")
             extract_hands(right_hand, "right")
+            # FleetGlue (issue 0005): write-side diag — confirm the wrist 16-floats actually got into shared memory.
+            if _n <= 5 or _n % 30 == 0:
+                with self.left_arm_pose_shared.get_lock():
+                    _vals_l = list(self.left_arm_pose_shared[:])
+                _vals_l_str = ",".join(f"{v:+.3f}" for v in _vals_l)
+                print(f"[WRITE #{_n}] L_shared={_vals_l_str}", file=_sys.stderr, flush=True)
 
-        except:
-            pass
+        except Exception as _hm_exc:
+            import traceback as _tb, sys as _sys
+            if not getattr(self, "_hand_move_diag_done", False):
+                self._hand_move_diag_done = True
+                try:
+                    keys = list(event.value.keys()) if hasattr(event.value, "keys") else f"type={type(event.value).__name__}"
+                    left = event.value.get("left") if hasattr(event.value, "get") else None
+                    left_len = len(left) if hasattr(left, "__len__") else "n/a"
+                    print(f"[hand_move DIAG] event.value keys={keys} left_len={left_len}", file=_sys.stderr, flush=True)
+                except Exception as _:
+                    print(f"[hand_move DIAG] failed introspection: {_!r}", file=_sys.stderr, flush=True)
+                print(f"[hand_move DIAG] traceback:\n{_tb.format_exc()}", file=_sys.stderr, flush=True)
     
+    def _hide_grid(self, session):
+        """FleetGlue (issue 0003): replace the default scene with one that excludes the ground
+        grid. The vuer.ai JS bundle treats query-param `grid=False` as truthy ("False" string),
+        so the queries= path doesn't work — but session.set with DefaultScene(grid=False) does."""
+        session.set @ DefaultScene(grid=False)
+
     ## immersive MODE
     async def main_image_binocular_zmq(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -368,6 +463,18 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -408,6 +515,18 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -445,6 +564,18 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -482,6 +613,18 @@ class TeleVuer:
 
     ## ego MODE
     async def main_image_binocular_zmq_ego(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -537,6 +680,18 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq_ego(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -577,6 +732,18 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc_ego(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -614,6 +781,18 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc_ego(self, session):
+        self._hide_grid(session)
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(
@@ -651,6 +830,17 @@ class TeleVuer:
 
     ## pass-through MODE
     async def main_pass_through(self, session):
+        # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
+        # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
+        # pose is always relevant.
+        session.upsert(
+            Head(
+                stream=True,
+                key="head_tracking",
+                fps=30,
+            ),
+            to="bgChildren",
+        )
         if self.use_hand_tracking:
             session.upsert(
                 Hands(

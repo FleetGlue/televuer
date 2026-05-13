@@ -263,8 +263,19 @@ class TeleVuerWrapper:
         # hand tracking
         if self.use_hand_tracking:
             # 'Arm' pose data follows (basis) OpenXR Convention and (initial pose) OpenXR Arm Convention.
-            left_IPxr_Bxr_world_arm, left_arm_is_valid  = safe_mat_update(CONST_LEFT_ARM_POSE, self.tvuer.left_arm_pose)
-            right_IPxr_Bxr_world_arm, right_arm_is_valid = safe_mat_update(CONST_RIGHT_ARM_POSE, self.tvuer.right_arm_pose)
+            # FleetGlue (issue 0005): read-side diag — log live matrix det + a corner before safe_mat_update.
+            _live_l = self.tvuer.left_arm_pose
+            _live_r = self.tvuer.right_arm_pose
+            _read_n = getattr(self, "_read_diag_n", 0) + 1
+            self._read_diag_n = _read_n
+            if _read_n <= 5 or _read_n % 30 == 0:
+                import sys as _sys
+                _dl = np.linalg.det(_live_l); _dr = np.linalg.det(_live_r)
+                _t_l = _live_l[:3, 3]; _t_r = _live_r[:3, 3]
+                print(f"[READ  #{_read_n}] det(L)={_dl:+.4f} t(L)=({_t_l[0]:+.3f},{_t_l[1]:+.3f},{_t_l[2]:+.3f})  det(R)={_dr:+.4f} t(R)=({_t_r[0]:+.3f},{_t_r[1]:+.3f},{_t_r[2]:+.3f})",
+                      file=_sys.stderr, flush=True)
+            left_IPxr_Bxr_world_arm, left_arm_is_valid  = safe_mat_update(CONST_LEFT_ARM_POSE, _live_l)
+            right_IPxr_Bxr_world_arm, right_arm_is_valid = safe_mat_update(CONST_RIGHT_ARM_POSE, _live_r)
 
             # Change basis convention
             # From (basis) OpenXR Convention to (basis) Robot Convention:
