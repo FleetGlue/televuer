@@ -1,5 +1,5 @@
 from vuer import Vuer
-from vuer.schemas import ImageBackground, Hands, Head, MotionControllers, WebRTCVideoPlane, WebRTCStereoVideoPlane, DefaultScene
+from vuer.schemas import ImageBackground, Hands, Head, MotionControllers, WebRTCVideoPlane, WebRTCStereoVideoPlane
 from multiprocessing import Value, Array, Process, shared_memory
 import numpy as np
 import asyncio
@@ -388,16 +388,8 @@ class TeleVuer:
                     print(f"[hand_move DIAG] failed introspection: {_!r}", file=_sys.stderr, flush=True)
                 print(f"[hand_move DIAG] traceback:\n{_tb.format_exc()}", file=_sys.stderr, flush=True)
     
-    def _hide_grid(self, session):
-        """FleetGlue (issue 0003): TEMPORARILY DISABLED — both `session.set @ DefaultScene(grid=False)`
-        and `session.remove @ "grid"` cause the camera scene to break (operator can't see camera
-        feed in VR). Reverted to no-op while we investigate. Issue 0003 is back to open.
-        Keeping the helper as a stub so call sites don't need to change."""
-        pass
-
     ## immersive MODE
     async def main_image_binocular_zmq(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
@@ -464,7 +456,6 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
@@ -516,7 +507,6 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
@@ -565,7 +555,6 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
@@ -614,7 +603,6 @@ class TeleVuer:
 
     ## ego MODE
     async def main_image_binocular_zmq_ego(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
@@ -681,7 +669,6 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_zmq_ego(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
@@ -733,7 +720,6 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_binocular_webrtc_ego(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
@@ -782,7 +768,6 @@ class TeleVuer:
             await asyncio.sleep(1.0 / self.display_fps)
 
     async def main_image_monocular_webrtc_ego(self, session):
-        self._hide_grid(session)
         # FleetGlue (head tracking): upsert Head with stream=True so vuer.ai's JS bundle
         # fires HEAD_MOVE events. Independent of hand/controller mode — operator's headset
         # pose is always relevant.
