@@ -369,7 +369,8 @@ class TeleVuer:
             extract_hands(left_hand, "left")
             extract_hands(right_hand, "right")
             # FleetGlue (issue 0005): write-side diag — confirm the wrist 16-floats actually got into shared memory.
-            if _n <= 5 or _n % 30 == 0:
+            # Opt-in via XR_HAND_DIAG=1 (2026-06-12: gated alongside the read-side diag in tv_wrapper).
+            if os.environ.get("XR_HAND_DIAG") == "1" and (_n <= 5 or _n % 30 == 0):
                 with self.left_arm_pose_shared.get_lock():
                     _vals_l = list(self.left_arm_pose_shared[:])
                 _vals_l_str = ",".join(f"{v:+.3f}" for v in _vals_l)
